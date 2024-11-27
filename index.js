@@ -14,6 +14,10 @@ app.get('/', (req, res) => {
     res.send('Hello World!');
 })
 
+app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+})
+
 const { Client, GatewayIntentBits } = Discord;
 
 const TOKEN = process.env.DISCORD_TOKEN;
