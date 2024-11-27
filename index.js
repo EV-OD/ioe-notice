@@ -94,7 +94,7 @@ function startNewsChecker() {
     const noticeTypes = ['exam', 'entrance', 'official', 'admission'];
 
     noticeTypes.forEach((type) => {
-        schedule.scheduleJob('*/5 * * * * *', () => {
+        schedule.scheduleJob('*/5 * * * *', () => {
             console.log(`Checking updates for ${type} notices...`);
             checkForUpdates(type);
         });
