@@ -4,6 +4,7 @@ dotenv.config();
 const Discord = require('discord.js');
 const schedule = require('node-schedule');
 const { fetchCurrentNoticesIOE } = require('./pageUtils');
+const { setAllNoticeUrls, getAllNoticeUrls, setNoticeUrl } = require('./firebase');
 
 const { Client, GatewayIntentBits } = Discord;
 
@@ -12,7 +13,6 @@ const CHANNEL_NAME = 'test1'; // Replace with the desired channel name
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
 
-// Store the last URLs for each notice type
 let lastNewsUrls = {
     exam: '',
     entrance: '',
@@ -20,35 +20,58 @@ let lastNewsUrls = {
     admission: ''
 };
 
-let targetChannel; // Cache the target channel
+// Cache target channels for all servers
+let targetChannels = new Map(); // Map of guild ID to channel object
 
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
-    
-    // Dynamically find the channel by name
-    try {
-        const guild = client.guilds.cache.first(); // Get the first guild the bot is in (adjust if the bot is in multiple guilds)
-        if (!guild) {
-            console.error('No guild found.');
-            return;
-        }
 
-        targetChannel = guild.channels.cache.find((ch) => ch.name === CHANNEL_NAME && ch.isTextBased());
-        if (!targetChannel) {
-            console.error(`Channel '${CHANNEL_NAME}' not found.`);
-            return;
-        }
+    // Initialize the lastNewsUrls from Firebase
+    let savedUrls = await getAllNoticeUrls();
+    if (savedUrls) lastNewsUrls = savedUrls;
 
-        console.log(`Using channel: ${targetChannel.name}`);
+    // Find target channels for all servers
+    await findTargetChannels();
+
+    // Start the news checker
+    if (targetChannels.size > 0) {
         startNewsChecker();
-    } catch (error) {
-        console.error('Error setting up the bot:', error);
+    } else {
+        console.error('No target channels found in any server.');
     }
 });
 
 client.login(TOKEN);
 
-// Function to fetch and check news for a specific type
+// Find target channels in all servers
+async function findTargetChannels() {
+    try {
+        const guilds = client.guilds.cache;
+
+        if (!guilds.size) {
+            console.error('The bot is not part of any guild.');
+            return;
+        }
+
+        for (const [guildId, guild] of guilds) {
+            await guild.channels.fetch(); // Fetch all channels for the guild
+            const channel = guild.channels.cache.find(
+                (ch) => ch.name === CHANNEL_NAME && ch.isTextBased()
+            );
+
+            if (channel) {
+                targetChannels.set(guildId, channel);
+                console.log(`Found channel '${CHANNEL_NAME}' in guild '${guild.name}'`);
+            } else {
+                console.warn(`Channel '${CHANNEL_NAME}' not found in guild '${guild.name}'`);
+            }
+        }
+    } catch (error) {
+        console.error('Error finding target channels:', error);
+    }
+}
+
+// Check for updates and notify all servers
 async function checkForUpdates(noticeType) {
     try {
         const news = await fetchCurrentNoticesIOE(noticeType);
@@ -57,6 +80,12 @@ async function checkForUpdates(noticeType) {
         const latestNews = news[0]; // Assuming the latest news is always the first in the array
         if (latestNews.Url !== lastNewsUrls[noticeType]) {
             lastNewsUrls[noticeType] = latestNews.Url;
+
+            // Save the latest URL to Firestore
+            await setNoticeUrl(noticeType, latestNews.Url);
+            console.log(`New ${noticeType} notice found:`, latestNews);
+
+            // Send the news to all Discord servers
             sendNewsToDiscord(latestNews, noticeType);
         }
     } catch (error) {
@@ -64,13 +93,8 @@ async function checkForUpdates(noticeType) {
     }
 }
 
-// Function to send news to Discord
+// Send news to all target channels
 function sendNewsToDiscord(news, noticeType) {
-    if (!targetChannel) {
-        console.error('Target channel is not set.');
-        return;
-    }
-
     const safeUrl = encodeURI(news.Url);
 
     const embed = new Discord.EmbedBuilder()
@@ -81,16 +105,22 @@ function sendNewsToDiscord(news, noticeType) {
         .setFooter({ text: "Powered by SevenX" })
         .setTimestamp();
 
-    targetChannel.send({ embeds: [embed] });
+    // Send the embed to all target channels
+    targetChannels.forEach((channel, guildId) => {
+        channel.send({ embeds: [embed] }).catch((error) => {
+            console.error(`Error sending message to channel in guild '${guildId}':`, error);
+        });
+    });
 }
 
-// Helper function to capitalize the first letter of a string
+// Capitalize the first letter of a string
 function capitalizeFirstLetter(string) {
     return string.charAt(0).toUpperCase() + string.slice(1);
 }
 
 // Schedule tasks for all notice types
 function startNewsChecker() {
+    
     const noticeTypes = ['exam', 'entrance', 'official', 'admission'];
 
     noticeTypes.forEach((type) => {
@@ -98,5 +128,7 @@ function startNewsChecker() {
             console.log(`Checking updates for ${type} notices...`);
             checkForUpdates(type);
         });
+            // console.log(`Checking updates for ${type} notices...`);
+            // checkForUpdates(type);
     });
 }
